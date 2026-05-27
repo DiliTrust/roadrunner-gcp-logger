@@ -10,6 +10,17 @@ import (
 	"gopkg.in/natefinch/lumberjack.v2"
 )
 
+// Encoder-config field names and output targets that recur across the
+// mode-specific zap.Config blocks below. Pulled out as constants both for
+// readability and to satisfy the goconst linter.
+const (
+	encKeyLogger    = "logger"
+	encKeyMessage   = "message"
+	encodingConsole = "console"
+	encodingGCP     = "gcp"
+	outputStderr    = "stderr"
+)
+
 // ChannelConfig configures loggers per channel.
 type ChannelConfig struct {
 	// Dedicated channels per logger. By default logger allocated via named logger.
@@ -95,6 +106,13 @@ type Config struct {
 
 	// File logger options
 	FileLogger *FileLoggerConfig `mapstructure:"file_logger_options"`
+
+	// GCPProject is the Google Cloud project ID used to wrap raw trace IDs
+	// into the `projects/<id>/traces/<trace-id>` form Cloud Logging needs
+	// to link an entry to a Cloud Trace span. Only the top-level value is
+	// honored; per-channel values are ignored since the encoder is shared
+	// process-wide. Optional — when empty, trace IDs are emitted unwrapped.
+	GCPProject string `mapstructure:"gcp_project"`
 }
 
 // BuildLogger converts config into Zap configuration.
@@ -107,33 +125,33 @@ func (cfg *Config) BuildLogger() (*zap.Logger, error) {
 		zCfg = zap.Config{
 			Level:       zap.NewAtomicLevelAt(zap.InfoLevel),
 			Development: false,
-			Encoding:    "json",
+			Encoding:    encodingGCP,
 			EncoderConfig: zapcore.EncoderConfig{
-				TimeKey:        "ts",
-				LevelKey:       "level",
-				NameKey:        "logger",
+				TimeKey:        "time",
+				LevelKey:       "severity",
+				NameKey:        encKeyLogger,
 				CallerKey:      zapcore.OmitKey,
 				FunctionKey:    zapcore.OmitKey,
-				MessageKey:     "msg",
-				StacktraceKey:  zapcore.OmitKey,
+				MessageKey:     encKeyMessage,
+				StacktraceKey:  "stack_trace",
 				LineEnding:     cfg.LineEnding,
-				EncodeLevel:    zapcore.LowercaseLevelEncoder,
-				EncodeTime:     utcEpochTimeEncoder,
+				EncodeLevel:    GCPSeverityEncoder,
+				EncodeTime:     gcpRFC3339NanoTimeEncoder,
 				EncodeDuration: zapcore.SecondsDurationEncoder,
 				EncodeCaller:   zapcore.ShortCallerEncoder,
 			},
-			OutputPaths:      []string{"stderr"},
-			ErrorOutputPaths: []string{"stderr"},
+			OutputPaths:      []string{outputStderr},
+			ErrorOutputPaths: []string{outputStderr},
 		}
 	case development:
 		zCfg = zap.Config{
 			Level:       zap.NewAtomicLevelAt(zap.DebugLevel),
 			Development: true,
-			Encoding:    "console",
+			Encoding:    encodingConsole,
 			EncoderConfig: zapcore.EncoderConfig{
 				TimeKey:        "ts",
 				LevelKey:       "level",
-				NameKey:        "logger",
+				NameKey:        encKeyLogger,
 				CallerKey:      zapcore.OmitKey,
 				FunctionKey:    zapcore.OmitKey,
 				MessageKey:     "msg",
@@ -145,24 +163,24 @@ func (cfg *Config) BuildLogger() (*zap.Logger, error) {
 				EncodeDuration: zapcore.StringDurationEncoder,
 				EncodeCaller:   zapcore.ShortCallerEncoder,
 			},
-			OutputPaths:      []string{"stderr"},
-			ErrorOutputPaths: []string{"stderr"},
+			OutputPaths:      []string{outputStderr},
+			ErrorOutputPaths: []string{outputStderr},
 		}
 	case raw:
 		zCfg = zap.Config{
 			Level:    zap.NewAtomicLevelAt(zap.InfoLevel),
-			Encoding: "console",
+			Encoding: encodingConsole,
 			EncoderConfig: zapcore.EncoderConfig{
-				MessageKey: "message",
+				MessageKey: encKeyMessage,
 				LineEnding: cfg.LineEnding,
 			},
-			OutputPaths:      []string{"stderr"},
-			ErrorOutputPaths: []string{"stderr"},
+			OutputPaths:      []string{outputStderr},
+			ErrorOutputPaths: []string{outputStderr},
 		}
 	default:
 		zCfg = zap.Config{
 			Level:    zap.NewAtomicLevelAt(zap.DebugLevel),
-			Encoding: "console",
+			Encoding: encodingConsole,
 			EncoderConfig: zapcore.EncoderConfig{
 				TimeKey:        "T",
 				LevelKey:       "L",
@@ -178,8 +196,8 @@ func (cfg *Config) BuildLogger() (*zap.Logger, error) {
 				EncodeDuration: zapcore.StringDurationEncoder,
 				EncodeCaller:   zapcore.ShortCallerEncoder,
 			},
-			OutputPaths:      []string{"stderr"},
-			ErrorOutputPaths: []string{"stderr"},
+			OutputPaths:      []string{outputStderr},
+			ErrorOutputPaths: []string{outputStderr},
 		}
 	}
 
@@ -219,11 +237,15 @@ func (cfg *Config) BuildLogger() (*zap.Logger, error) {
 			},
 		)
 
-		core := zapcore.NewCore(
-			zapcore.NewJSONEncoder(zCfg.EncoderConfig),
-			w,
-			zCfg.Level,
-		)
+		var enc zapcore.Encoder
+		switch zCfg.Encoding {
+		case encodingGCP:
+			enc = newGCPEncoder(zCfg.EncoderConfig)
+		default:
+			enc = zapcore.NewJSONEncoder(zCfg.EncoderConfig)
+		}
+
+		core := zapcore.NewCore(enc, w, zCfg.Level)
 		return zap.New(core), nil
 	}
 
@@ -248,6 +270,8 @@ func utcISO8601TimeEncoder(t time.Time, enc zapcore.PrimitiveArrayEncoder) {
 	enc.AppendString(t.UTC().Format("2006-01-02T15:04:05-0700"))
 }
 
-func utcEpochTimeEncoder(t time.Time, enc zapcore.PrimitiveArrayEncoder) {
-	enc.AppendInt64(t.UTC().UnixNano())
+// gcpRFC3339NanoTimeEncoder formats time as RFC3339 with nanosecond precision in UTC,
+// the format expected by GCP Cloud Logging when reading the `time` field from structured logs.
+func gcpRFC3339NanoTimeEncoder(t time.Time, enc zapcore.PrimitiveArrayEncoder) {
+	enc.AppendString(t.UTC().Format(time.RFC3339Nano))
 }

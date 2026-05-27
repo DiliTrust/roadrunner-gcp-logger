@@ -5,10 +5,12 @@ on:
     branches:
       - master
       - stable
+      - main
   pull_request:
     branches:
       - master
       - stable
+      - main
 
 jobs:
   logger_test:

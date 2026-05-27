@@ -58,6 +58,7 @@ func (p *Plugin) Init(cfg Configurer) error {
 	}
 
 	p.cfg.InitDefault()
+	SetGCPProject(p.cfg.GCPProject)
 	p.base, err = p.cfg.BuildLogger()
 
 	if err != nil {

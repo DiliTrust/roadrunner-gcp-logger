@@ -28,6 +28,10 @@
     "file_logger_options": {
       "$ref": "#/$defs/FileLoggerOptions"
     },
+    "gcp_project": {
+      "description": "Google Cloud project ID. Used to wrap raw trace IDs as `projects/<id>/traces/<trace-id>` so Cloud Logging can link entries to Cloud Trace spans. Only honored at the top level; per-channel values are ignored.",
+      "type": "string"
+    },
     "channels": {
       "description": "You can configure logging for each plugin individually. The key is the plugin name and the value is logging options in same format as the parent.",
       "type": "object",
@@ -126,11 +130,12 @@
       ]
     },
     "LogEncoding": {
-      "description": "Encoding format. Default depends on logging mode. For production, `json` is the default, else `console`. Also supports any third-party encodings registered via RegisterEncoder.",
+      "description": "Encoding format. Default depends on logging mode: `gcp` for production (GCP Cloud Logging structured format), else `console`. `gcp` emits JSON with GCP-recognized field names (severity, time, message) and folds RoadRunner HTTP access-log entries into a nested `httpRequest` object. Also supports any third-party encodings registered via RegisterEncoder.",
       "type": "string",
       "enum": [
         "console",
-        "json"
+        "json",
+        "gcp"
       ]
     },
     "LogOutput": {
